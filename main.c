@@ -12,7 +12,7 @@
 
 //#define LOG
 
-PSP_MODULE_INFO("Hold", 0x1000, 3, 8);
+PSP_MODULE_INFO("Hold", 0x1000, 4, 0);
 PSP_MAIN_THREAD_ATTR(0);
 
 #define HOLD_FULLHOLD		0x00000001
@@ -29,13 +29,10 @@ int sceDisplayDisable(void);
 int ucpu = 60, ubus = 30;
 
 unsigned char power_sw_lock_counter = 0;
-unsigned char suspend_allowed = 1;
-unsigned char suspend_pushed = 0;
 unsigned char hold_allowed = 1;
-unsigned char nodisplay = 0;
+unsigned char setbright = 0;
 unsigned char holding = 0;
 unsigned char normal = 0;
-unsigned char setbright = 0;
 
 PspSysEventHandler events;
 SceUID th_sleep, th_tick;
@@ -157,15 +154,6 @@ int suspend_handler(int ev_id, char* ev_name, void* param, int* result){
 		{
 			return -1;
 		}
-		else if (!suspend_allowed)
-		{
-			suspend_allowed = 1;
-			return -1;
-		}
-		else
-		{
-			return 0;
-		}
 	}
 	return 0;
 }
@@ -181,7 +169,7 @@ int tick_thread(SceSize args, void *argp)
 {
 	while(1)
 	{
-		if (nodisplay || holding)
+		if (holding && !(normal))
 		{
 			scePowerTick(PSP_POWER_TICK_DISPLAY);
 		}
@@ -306,7 +294,6 @@ noflags:
 	return 0;
 }
 
-unsigned char last_normal = 0;
 unsigned char volup_extra = 0;
 unsigned char voldn_extra = 0;
 unsigned char lcd_handled = 0;
@@ -338,37 +325,50 @@ SkipSetAnalog:
 		prevButtons = raw_ctrl.Buttons;
 		raw_ctrl.Buttons = newButtons;
 
-		if ((packet->rx_sts & SYSCON_STS_POWER_SW_ON) && !(power_sw_lock_counter) && nodisplay)
+		if ((packet->rx_sts & SYSCON_STS_POWER_SW_ON) && !(power_sw_lock_counter) && holding)
 		{
-			suspend_pushed = 1;
+			power_sw_lock_counter = 60;
+
+			if (!normal)
+			{
+				holdflags |= HOLD_RESTORE;
+				holdflags &= ~(HOLD_FULLHOLD|HOLD_CHECKBRIGHT);
+			}
+			else
+			{
+				normal = 0;
+			}
+
+			holding = 0;
+		}
+
+		if (holding)
+		{
+			newButtons |= SYSCON_CTRL_HOLD;
+			raw_ctrl.Buttons |= SYSCON_CTRL_HOLD;
 		}
 
 		if (!(newButtons & SYSCON_CTRL_HOLD))
 		{
-			if ((((prevButtons^newButtons) & SYSCON_CTRL_LCD) && (newButtons & SYSCON_CTRL_LCD)) || suspend_pushed)
+			if ((prevButtons^newButtons) & SYSCON_CTRL_LCD)
 			{
-				if (nodisplay)
-				{
-					if(newButtons & SYSCON_CTRL_LCD)
-					{
-						lcd_handled = 1;
-					}
-					holdflags |= HOLD_RESTORE;
-					holdflags &= ~(HOLD_FULLHOLD|HOLD_CHECKBRIGHT);
-					nodisplay = 0;
-					if (suspend_pushed)
-					{
-						suspend_pushed = 0;
-						suspend_allowed = 0;
-					}
-				}
-				else if (!suspend_pushed)
+				if (newButtons & SYSCON_CTRL_LCD)
 				{
 					if (((model == 1) && (tb >= 63) && (tb <= 73)) || ((model >= 2) && (tb >= 79) && (tb <= 89)))
 					{
 						lcd_handled = 1;
 						setbright = 1;
 					}
+				}
+				else
+				{
+					if (setbright)
+					{
+						setbright = 0;
+						holdflags |= HOLD_SETBRIGHT;
+					}
+
+					holdflags |= HOLD_CHECKBRIGHT;
 				}
 			}
 		}
@@ -383,69 +383,24 @@ SkipSetAnalog:
 		else
 		{
 			lcd_handled = 0;
-			if (!(newButtons & SYSCON_CTRL_HOLD) && ((prevButtons^newButtons) & SYSCON_CTRL_LCD))
-			{
-				if (setbright)
-				{
-					setbright = 0;
-					holdflags |= HOLD_SETBRIGHT;
-				}
-					holdflags |= HOLD_CHECKBRIGHT;
-			}
 		}
 
 		if ((prevButtons^newButtons) & SYSCON_CTRL_HOLD)
 		{
-			if(newButtons & SYSCON_CTRL_HOLD)
+			if (newButtons & SYSCON_CTRL_HOLD)
 			{
-				if (power_sw_lock_counter && last_normal)
+				if (raw_ctrl.Ly > 15)
+				{
+					holdflags |= HOLD_FULLHOLD;
+					holdflags &= ~(HOLD_RESTORE|HOLD_CHECKBRIGHT);
+				}
+				else
 				{
 					normal = 1;
 				}
-				else
-				{
-					if (raw_ctrl.Ly > 15)
-					{
-						if (!nodisplay)
-						{
-							holdflags |= HOLD_FULLHOLD;
-							holdflags &= ~(HOLD_RESTORE|HOLD_CHECKBRIGHT);
-						}
-						else
-						{
-							nodisplay = 0;
-						}
-						holding = 1;
-					}
-					else
-					{
-						normal = 1;
-					}
-				}
-				last_normal = 0;
-			}
-			else
-			{
-				power_sw_lock_counter = 60;
 
-				if (!normal)
-				{
-					if (raw_ctrl.Ly > 15)
-					{
-						holdflags |= HOLD_RESTORE;
-						holdflags &= ~(HOLD_FULLHOLD|HOLD_CHECKBRIGHT);
-					}
-					else
-					{
-						nodisplay = 1;
-					}
-					holding = 0;
-				}
-				else
-				{
-					last_normal = 1;
-					normal = 0;
-				}
+				power_sw_lock_counter = 0;
+				holding = 1;
 			}
 		}
 
